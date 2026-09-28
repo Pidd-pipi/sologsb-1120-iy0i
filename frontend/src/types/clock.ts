@@ -8,8 +8,8 @@ export type ConditionGrade = '一级' | '二级' | '三级' | '待修';
 
 export const CONDITION_GRADES: ConditionGrade[] = ['一级', '二级', '三级', '待修'];
 
-/** 修复状态（用于台账分栏） */
-export type RepairState = '未开工' | '维修中' | '待测试' | '已完成';
+/** 修复状态（用于台账分栏；返修单未结案时优先标为「返修中」） */
+export type RepairState = '未开工' | '维修中' | '待测试' | '已完成' | '返修中';
 
 /** 古董钟表 */
 export interface Clock {

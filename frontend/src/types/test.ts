@@ -29,6 +29,8 @@ export interface TimekeepingTest {
   /** 动力储备 h */
   powerReserve: number;
   conclusion: string;
+  /** 所属返修单（返修期间补录的测试；空为原始测试档案） */
+  reworkId?: string;
 }
 
 export type TimekeepingTestDraft = Omit<TimekeepingTest, 'id'>;

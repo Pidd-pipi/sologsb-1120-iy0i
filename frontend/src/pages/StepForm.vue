@@ -5,7 +5,9 @@ import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { useRepairProgress } from '../hooks/useRepairProgress';
+import { useReworkGuard } from '../hooks/useReworkGuard';
 import StepSequence from '../components/common/StepSequence.vue';
 import { STEP_FIELD_MAP, STEP_TYPES, type RepairStepDraft, type StepType } from '../types/step';
 
@@ -14,9 +16,12 @@ const router = useRouter();
 const clockStore = useClockStore();
 const partStore = usePartStore();
 const stepStore = useStepStore();
+const reworkStore = useReworkStore();
 
 const clockId = ref(String(route.query.clockId ?? ''));
 const { steps, total, percent, current, gaps } = useRepairProgress(clockId);
+const { delivered, inWarranty, openRework, stepLocked } = useReworkGuard(clockId);
+const lockedStepIds = computed(() => steps.value.filter((s) => stepLocked(s)).map((s) => s.id));
 const parts = computed(() => partStore.byClock(clockId.value));
 const nextSeq = computed(() => (steps.value.length === 0 ? 1 : Math.max(...steps.value.map((s) => s.seq)) + 1));
 
@@ -66,6 +71,10 @@ async function submit() {
     error.value = '责任人必填';
     return;
   }
+  if (delivered.value && inWarranty.value && !openRework.value) {
+    error.value = '该钟表已交付且仍在保修期内，请先在钟表详情页建返修单，再录返修工序';
+    return;
+  }
   const used = steps.value.map((s) => s.seq);
   if (used.includes(form.seq)) {
     error.value = `顺序号 ${form.seq} 已被占用，请改用 ${nextSeq.value}`;
@@ -75,8 +84,13 @@ async function submit() {
     error.value = `顺序号跳号：当前最大顺序号为 ${Math.max(0, nextSeq.value - 1)}，新步骤必须用 ${nextSeq.value}`;
     return;
   }
-  const created = await stepStore.add({ ...form, clockId: clockId.value, startedAt: Date.now() });
-  ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}`);
+  const created = await stepStore.add({
+    ...form,
+    clockId: clockId.value,
+    startedAt: Date.now(),
+    reworkId: openRework.value?.id,
+  });
+  ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}${openRework.value ? `（${openRework.value.reworkNo}）` : ''}`);
   form.operator = '';
   form.troubleNote = '';
   form.partIds = [];
@@ -95,6 +109,7 @@ onMounted(async () => {
   await clockStore.load();
   await partStore.load();
   await stepStore.load();
+  await reworkStore.load();
   if (!clockId.value && clockStore.items.length > 0) {
     clockId.value = clockStore.items[0].id;
   }
@@ -115,6 +130,22 @@ onMounted(async () => {
     <div class="grid">
       <el-card shadow="never">
         <template #header><strong>工序信息</strong></template>
+        <el-alert
+          v-if="openRework"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`返修单 ${openRework.reworkNo} 未结案：新工序将归入该返修单，原工序只读`"
+          style="margin-bottom: 12px"
+        />
+        <el-alert
+          v-else-if="delivered && !inWarranty"
+          type="info"
+          :closable="false"
+          show-icon
+          title="已过保修期：本次按普通维修建档，不产生返修单"
+          style="margin-bottom: 12px"
+        />
         <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-bottom: 12px" />
         <el-form :model="form" label-width="120px">
           <el-form-item label="钟表">
@@ -173,7 +204,13 @@ onMounted(async () => {
             <el-input v-model="form.operator" />
           </el-form-item>
           <el-form-item>
-            <el-button type="primary" @click="submit">保存步骤</el-button>
+            <el-button
+              type="primary"
+              :disabled="delivered && inWarranty && !openRework"
+              @click="submit"
+            >
+              保存步骤
+            </el-button>
             <el-button @click="router.push('/clocks')">返回台账</el-button>
           </el-form-item>
         </el-form>
@@ -188,7 +225,7 @@ onMounted(async () => {
             <span v-else class="muted">全部完成</span>
           </div>
         </template>
-        <StepSequence :items="steps" @finish="finish" @rollback="rollback" />
+        <StepSequence :items="steps" :locked-ids="lockedStepIds" @finish="finish" @rollback="rollback" />
       </el-card>
     </div>
   </div>

@@ -43,6 +43,8 @@ export interface RepairStep {
   startedAt: number;
   finishedAt?: number;
   state: StepState;
+  /** 所属返修单（返修期间新增的工序；空为原始工序档案） */
+  reworkId?: string;
 }
 
 export type RepairStepDraft = Omit<RepairStep, 'id'>;

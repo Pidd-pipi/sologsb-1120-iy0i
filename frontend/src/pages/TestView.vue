@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { useStepStore } from '../stores/stepStore';
+import { useReworkStore } from '../stores/reworkStore';
+import { useReworkGuard } from '../hooks/useReworkGuard';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
 import { TEST_POSITIONS, judgeTest, type PositionReading } from '../types/test';
@@ -13,10 +15,17 @@ const route = useRoute();
 const router = useRouter();
 const clockStore = useClockStore();
 const stepStore = useStepStore();
+const reworkStore = useReworkStore();
 
 const clockId = ref(String(route.params.clockId ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
+const { openRework, reworks } = useReworkGuard(clockId);
+
+function reworkNoOf(id?: string): string {
+  if (!id) return '';
+  return reworks.value.find((r) => r.id === id)?.reworkNo ?? '';
+}
 
 const readings = reactive<PositionReading[]>(
   TEST_POSITIONS.map((position) => ({ position, rate: 0, amplitude: 260, beatError: 0.4 })),
@@ -67,8 +76,9 @@ async function save() {
     positions: readings.map((r) => ({ ...r })),
     powerReserve: powerReserve.value,
     conclusion: conclusion.value,
+    reworkId: openRework.value?.id,
   });
-  ElMessage.success('走时测试已记录');
+  ElMessage.success(openRework.value ? `测试已归入返修单 ${openRework.value.reworkNo}` : '走时测试已记录');
 }
 
 async function copySheet() {
@@ -103,6 +113,7 @@ function reset() {
 onMounted(async () => {
   await clockStore.load();
   await stepStore.load();
+  await reworkStore.load();
   if (!clock.value && clockStore.items.length > 0) {
     clockId.value = clockStore.items[0].id;
     await router.replace(`/tests/${clockId.value}`);
@@ -116,9 +127,18 @@ onMounted(async () => {
       <h2>走时测试 · {{ clock?.clockNo ?? '未选择' }}</h2>
       <StateBadge :grade="clock?.conditionGrade" />
       <el-tag type="info" effect="plain">历史测试 {{ tests.length }} 次</el-tag>
+      <el-tag v-if="openRework" type="warning">返修中 · 新测试归入 {{ openRework.reworkNo }}</el-tag>
       <div class="spacer" />
       <el-button @click="router.push(`/clocks/${clockId}`)">返回钟表详情</el-button>
     </div>
+
+    <el-alert
+      v-if="openRework"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="`返修单 ${openRework.reworkNo} 未结案：本次测试记录归入返修单，原测试档案只读`"
+    />
 
     <div class="grid">
       <el-card shadow="never">
@@ -202,6 +222,14 @@ onMounted(async () => {
             <el-table-column prop="amplitude" label="摆幅" width="80" />
             <el-table-column prop="beatError" label="偏振" width="80" />
             <el-table-column prop="powerReserve" label="动储 h" width="90" />
+            <el-table-column label="来源" width="130">
+              <template #default="{ row }">
+                <el-tag v-if="row.reworkId" size="small" type="warning" effect="plain">
+                  返修 {{ reworkNoOf(row.reworkId) }}
+                </el-tag>
+                <el-tag v-else size="small" type="info" effect="plain">原始档案</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column prop="conclusion" label="结论" min-width="120" />
           </el-table>
           <el-empty v-if="tests.length === 0" description="暂无历史测试" :image-size="60" />

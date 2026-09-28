@@ -4,21 +4,24 @@ import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { useStepStore } from '../stores/stepStore';
+import { useReworkStore } from '../stores/reworkStore';
 import { useClockSearch } from '../hooks/useClockSearch';
 import ClockCard from '../components/common/ClockCard.vue';
-import { CLOCK_KINDS, CONDITION_GRADES, type ClockDraft, type ClockKind, type ConditionGrade } from '../types/clock';
+import { CLOCK_KINDS, CONDITION_GRADES, type ClockDraft, type ClockKind, type ConditionGrade, type RepairState } from '../types/clock';
 
 const router = useRouter();
 const clockStore = useClockStore();
 const stepStore = useStepStore();
+const reworkStore = useReworkStore();
 const { filters, result, options, reset } = useClockSearch();
 
-const REPAIR_STATES = ['未开工', '维修中', '待测试', '已完成'] as const;
+const REPAIR_STATES: RepairState[] = ['未开工', '维修中', '待测试', '已完成', '返修中'];
 
-type RepairState = (typeof REPAIR_STATES)[number];
+const fmtDate = (ts?: number) => (ts ? new Date(ts).toLocaleDateString('zh-CN') : '');
 
-/** 由工序与走时测试推导修复状态，用于台账分栏 */
+/** 由返修单、工序与走时测试推导修复状态，用于台账分栏；返修单未结案优先标为返修中 */
 function repairStateOf(clockId: string): RepairState {
+  if (reworkStore.openRework(clockId)) return '返修中';
   const steps = stepStore.items.filter((s) => s.clockId === clockId);
   const tests = stepStore.tests.filter((t) => t.clockId === clockId);
   const done = steps.filter((s) => s.state === 'done').length;
@@ -27,6 +30,22 @@ function repairStateOf(clockId: string): RepairState {
   if (done === steps.length) return '待测试';
   if (done > 0) return '维修中';
   return '未开工';
+}
+
+/** 卡片底部：工序进度 + 交付/保修或返修状态 */
+function footerOf(clockId: string): string {
+  const open = reworkStore.openRework(clockId);
+  const doneSteps = stepStore.items.filter((s) => s.clockId === clockId && s.state === 'done').length;
+  const totalSteps = stepStore.items.filter((s) => s.clockId === clockId).length;
+  const testCount = stepStore.tests.filter((t) => t.clockId === clockId).length;
+  const base = `工序 ${doneSteps}/${totalSteps} · 走时测试 ${testCount} 次`;
+  if (open) return `${base} · 返修中 ${open.reworkNo}`;
+  const latest = reworkStore.latestDelivery(clockId);
+  if (latest) {
+    const inW = Date.now() <= latest.warrantyUntil;
+    return `${base} · 已交付，保修至 ${fmtDate(latest.warrantyUntil)}（${inW ? '保修期内' : '已过保'}）`;
+  }
+  return base;
 }
 
 const columns = computed(() =>
@@ -79,6 +98,7 @@ async function submit() {
 onMounted(() => {
   void clockStore.load();
   void stepStore.load();
+  void reworkStore.load();
 });
 </script>
 
@@ -135,17 +155,15 @@ onMounted(() => {
 
     <div class="board">
       <div v-for="col in columns" :key="col.state" class="column">
-        <div class="column-title">
+        <div class="column-title" :class="{ reworking: col.state === '返修中' }">
           <strong>{{ col.state }}</strong>
-          <el-tag size="small" type="info">{{ col.rows.length }}</el-tag>
+          <el-tag size="small" :type="col.state === '返修中' ? 'warning' : 'info'">{{ col.rows.length }}</el-tag>
         </div>
         <ClockCard
           v-for="item in col.rows"
           :key="item.id"
           :item="item"
-          :footer="`工序 ${stepStore.items.filter((s) => s.clockId === item.id && s.state === 'done').length}/${
-            stepStore.items.filter((s) => s.clockId === item.id).length
-          } · 走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id).length} 次`"
+          :footer="footerOf(item.id)"
           @open="(id) => router.push(`/clocks/${id}`)"
         />
         <el-empty v-if="col.rows.length === 0" description="暂无" :image-size="60" />
@@ -221,7 +239,7 @@ onMounted(() => {
 }
 .board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 .column {
@@ -234,5 +252,8 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 15px;
+}
+.column-title.reworking {
+  color: #b88230;
 }
 </style>

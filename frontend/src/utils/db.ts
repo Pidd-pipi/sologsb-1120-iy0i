@@ -3,10 +3,12 @@ import type { Clock } from '../types/clock';
 import type { MovementPart } from '../types/part';
 import type { RepairStep } from '../types/step';
 import type { TimekeepingTest } from '../types/test';
+import type { Delivery } from '../types/delivery';
+import type { ReworkOrder } from '../types/rework';
 import { newId } from './id';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -14,6 +16,8 @@ class ClockRepairDB extends Dexie {
   parts!: Table<MovementPart, string>;
   steps!: Table<RepairStep, string>;
   tests!: Table<TimekeepingTest, string>;
+  deliveries!: Table<Delivery, string>;
+  reworks!: Table<ReworkOrder, string>;
 
   constructor() {
     super(DB_NAME);
@@ -48,6 +52,15 @@ class ClockRepairDB extends Dexie {
             if (row.positions === undefined) row.positions = [];
           });
       });
+    // v3：交付记录与返修单；工序/测试加返修归属索引
+    this.version(3).stores({
+      clocks: 'id, clockNo, kind, caliber, conditionGrade, createdAt',
+      parts: 'id, clockId, name, wearState, decision, sourceLot',
+      steps: 'id, clockId, seq, stepType, state, startedAt, reworkId',
+      tests: 'id, clockId, testedAt, conclusion, reworkId',
+      deliveries: 'id, clockId, deliveredAt, warrantyUntil',
+      reworks: 'id, clockId, state, openedAt, deliveryId',
+    });
   }
 }
 
@@ -210,6 +223,57 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 3 * day,
       state: 'pending',
     },
+    {
+      id: newId('stp'),
+      clockId: clockB,
+      stepType: '拆解',
+      seq: 1,
+      partIds: [parts[2].id],
+      cleanSolvent: '',
+      cleanMethod: '',
+      oilType: '',
+      oilPoints: '',
+      torque: 0.4,
+      troubleNote: '猎壳铰链紧，开盖器垫羊皮操作',
+      operator: '祁仲言',
+      startedAt: now - 8 * day,
+      finishedAt: now - 8 * day + 60 * 60000,
+      state: 'done',
+    },
+    {
+      id: newId('stp'),
+      clockId: clockB,
+      stepType: '清洗',
+      seq: 2,
+      partIds: [],
+      cleanSolvent: '石油醚',
+      cleanMethod: '手工',
+      oilType: '',
+      oilPoints: '',
+      torque: 0,
+      troubleNote: '',
+      operator: '祁仲言',
+      startedAt: now - 7 * day,
+      finishedAt: now - 7 * day + 50 * 60000,
+      state: 'done',
+    },
+    {
+      id: newId('stp'),
+      clockId: clockB,
+      stepType: '装配',
+      seq: 3,
+      partIds: [parts[2].id],
+      cleanSolvent: '',
+      cleanMethod: '',
+      oilType: 'Moebius 8000',
+      oilPoints: '中心轮上下轴榫、擒纵叉瓦',
+      torque: 0.3,
+      troubleNote: '',
+      operator: '祁仲言',
+      startedAt: now - 6 * day,
+      finishedAt: now - 6 * day + 90 * 60000,
+      state: 'done',
+    },
   ];
 
   const tests: TimekeepingTest[] = [
@@ -229,12 +293,40 @@ export async function ensureSeedData(): Promise<void> {
       powerReserve: 46,
       conclusion: '合格',
     },
+    {
+      id: newId('tst'),
+      clockId: clockB,
+      testedAt: now - 6 * day,
+      amplitude: 271,
+      beatError: 0.3,
+      rate: 4.2,
+      positions: [
+        { position: '面上', rate: 3.8, amplitude: 275, beatError: 0.2 },
+        { position: '面下', rate: 4.6, amplitude: 268, beatError: 0.4 },
+        { position: '12上', rate: 4.1, amplitude: 272, beatError: 0.3 },
+        { position: '6上', rate: 4.3, amplitude: 269, beatError: 0.3 },
+      ],
+      powerReserve: 40,
+      conclusion: '合格',
+    },
   ];
 
-  await db.transaction('rw', db.clocks, db.parts, db.steps, db.tests, async () => {
+  const deliveries: Delivery[] = [
+    {
+      id: newId('dlv'),
+      clockId: clockB,
+      receiver: '陆先生',
+      deliveredAt: now - 5 * day,
+      warrantyUntil: now + 360 * day,
+      note: '当场验表，日差 +4 s/d，领取人签字确认',
+    },
+  ];
+
+  await db.transaction('rw', db.clocks, db.parts, db.steps, db.tests, db.deliveries, async () => {
     await db.clocks.bulkPut(clocks);
     await db.parts.bulkPut(parts);
     await db.steps.bulkPut(steps);
     await db.tests.bulkPut(tests);
+    await db.deliveries.bulkPut(deliveries);
   });
 }

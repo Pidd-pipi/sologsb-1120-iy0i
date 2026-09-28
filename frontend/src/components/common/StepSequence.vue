@@ -8,6 +8,8 @@ const props = defineProps<{
   items: RepairStep[];
   /** 是否展示上下移动/拖拽排序 */
   sortable?: boolean;
+  /** 只读工序 id（交付/返修档案保护，禁止完成、回退与排序） */
+  lockedIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -19,13 +21,31 @@ const emit = defineEmits<{
 
 const dragId = ref<string>('');
 
+const locked = computed(() => new Set(props.lockedIds ?? []));
+
 const gaps = computed(() => findSeqGaps(props.items.map((it) => it.seq)));
 const conflict = computed(() => gaps.value.length > 0);
 
+function isLocked(id: string): boolean {
+  return locked.value.has(id);
+}
+
+/** 相邻行被锁定时禁止朝该方向移动（避免交换到只读工序的顺序号） */
+function moveDisabled(index: number, direction: 'up' | 'down'): boolean {
+  const neighbor = direction === 'up' ? props.items[index - 1] : props.items[index + 1];
+  if (!neighbor) return true;
+  return isLocked(props.items[index].id) || isLocked(neighbor.id);
+}
+
 function onDragStart(id: string) {
+  if (isLocked(id)) return;
   dragId.value = id;
 }
 function onDrop(toId: string) {
+  if (isLocked(toId)) {
+    dragId.value = '';
+    return;
+  }
   if (dragId.value && dragId.value !== toId) {
     emit('reorder', { fromId: dragId.value, toId });
   }
@@ -49,8 +69,11 @@ function onDrop(toId: string) {
           <span :class="{ gap: conflict && gaps.includes(row.seq) }">#{{ row.seq }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="步骤" width="110">
-        <template #default="{ row }">{{ row.stepType }}</template>
+      <el-table-column label="步骤" width="120">
+        <template #default="{ row }">
+          {{ row.stepType }}
+          <el-tag v-if="row.reworkId" size="small" type="warning" effect="plain">返修</el-tag>
+        </template>
       </el-table-column>
       <el-table-column label="状态" width="100">
         <template #default="{ row }">
@@ -73,31 +96,38 @@ function onDrop(toId: string) {
       </el-table-column>
       <el-table-column label="操作" width="250">
         <template #default="{ row, $index }">
-          <el-button v-if="row.state !== 'done'" size="small" type="primary" @click="emit('finish', row.id)">
-            完成
-          </el-button>
-          <el-button v-else size="small" type="warning" @click="emit('rollback', row.id)">回退</el-button>
-          <template v-if="sortable">
-            <el-button size="small" :disabled="$index === 0" @click="emit('move', { id: row.id, direction: 'up' })">
-              上移
+          <el-tag v-if="isLocked(row.id)" size="small" type="info" effect="plain">只读存档</el-tag>
+          <template v-else>
+            <el-button v-if="row.state !== 'done'" size="small" type="primary" @click="emit('finish', row.id)">
+              完成
             </el-button>
-            <el-button
-              size="small"
-              :disabled="$index === items.length - 1"
-              @click="emit('move', { id: row.id, direction: 'down' })"
+            <el-button v-else size="small" type="warning" @click="emit('rollback', row.id)">回退</el-button>
+            <template v-if="sortable">
+              <el-button
+                size="small"
+                :disabled="moveDisabled($index, 'up')"
+                @click="emit('move', { id: row.id, direction: 'up' })"
+              >
+                上移
+              </el-button>
+              <el-button
+                size="small"
+                :disabled="moveDisabled($index, 'down')"
+                @click="emit('move', { id: row.id, direction: 'down' })"
+              >
+                下移
+              </el-button>
+            </template>
+            <span
+              class="drag-handle"
+              draggable="true"
+              title="拖拽到目标行可交换顺序"
+              @dragstart="onDragStart(row.id)"
+              @dragover.prevent
+              @drop="onDrop(row.id)"
+              >⣿</span
             >
-              下移
-            </el-button>
           </template>
-          <span
-            class="drag-handle"
-            draggable="true"
-            title="拖拽到目标行可交换顺序"
-            @dragstart="onDragStart(row.id)"
-            @dragover.prevent
-            @drop="onDrop(row.id)"
-            >⣿</span
-          >
         </template>
       </el-table-column>
     </el-table>
