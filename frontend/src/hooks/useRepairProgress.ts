@@ -18,13 +18,23 @@ export interface RepairProgress {
 /**
  * 统计某台钟表的工序完成比例与当前卡点步骤。
  * 被钟表详情页与工序录入页消费。
+ * 传 orderId 时只统计该返修/维修单名下的工序；否则只统计原始档案工序。
  */
-export function useRepairProgress(clockId: string | Ref<string>) {
+export function useRepairProgress(
+  clockId: string | Ref<string>,
+  orderId?: string | Ref<string | undefined>,
+) {
   const stepStore = useStepStore();
   const id = computed(() => unref(clockId));
+  const scope = computed(() => (orderId === undefined ? undefined : unref(orderId)));
 
   const steps = computed(() =>
-    stepStore.items.filter((it) => it.clockId === id.value).sort((a, b) => a.seq - b.seq),
+    stepStore.items
+      .filter((it) => {
+        if (it.clockId !== id.value) return false;
+        return scope.value ? it.orderId === scope.value : !it.orderId;
+      })
+      .sort((a, b) => a.seq - b.seq),
   );
   const total = computed(() => steps.value.length);
   const done = computed(() => steps.value.filter((it) => it.state === 'done').length);

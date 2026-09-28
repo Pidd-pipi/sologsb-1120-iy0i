@@ -5,8 +5,10 @@ import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
+import { useOrderStore } from '../stores/orderStore';
 import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
+import { ORDER_TYPE_LABEL } from '../types/order';
 import { STEP_FIELD_MAP, STEP_TYPES, type RepairStepDraft, type StepType } from '../types/step';
 
 const route = useRoute();
@@ -14,14 +16,19 @@ const router = useRouter();
 const clockStore = useClockStore();
 const partStore = usePartStore();
 const stepStore = useStepStore();
+const orderStore = useOrderStore();
 
+/** ?orderId= 返修单模式：工序挂在单据名下；否则登记到钟表原始档案 */
+const orderId = ref(String(route.query.orderId ?? ''));
+const order = computed(() => (orderId.value ? orderStore.byId(orderId.value) : undefined));
 const clockId = ref(String(route.query.clockId ?? ''));
-const { steps, total, percent, current, gaps } = useRepairProgress(clockId);
+const { steps, total, percent, current, gaps } = useRepairProgress(clockId, orderId);
 const parts = computed(() => partStore.byClock(clockId.value));
 const nextSeq = computed(() => (steps.value.length === 0 ? 1 : Math.max(...steps.value.map((s) => s.seq)) + 1));
 
 const form = reactive<RepairStepDraft>({
   clockId: '',
+  orderId: undefined,
   stepType: '拆解',
   seq: 1,
   partIds: [],
@@ -40,9 +47,10 @@ const error = ref('');
 const fields = computed(() => STEP_FIELD_MAP[form.stepType as StepType]);
 
 watch(
-  clockId,
-  (id) => {
-    form.clockId = id;
+  [clockId, orderId],
+  ([cid, oid]) => {
+    form.clockId = cid;
+    form.orderId = oid || undefined;
     form.partIds = [];
   },
   { immediate: true },
@@ -75,27 +83,48 @@ async function submit() {
     error.value = `顺序号跳号：当前最大顺序号为 ${Math.max(0, nextSeq.value - 1)}，新步骤必须用 ${nextSeq.value}`;
     return;
   }
-  const created = await stepStore.add({ ...form, clockId: clockId.value, startedAt: Date.now() });
-  ElMessage.success(`已追加步骤 #${created.seq} ${created.stepType}`);
-  form.operator = '';
-  form.troubleNote = '';
-  form.partIds = [];
+  try {
+    const created = await stepStore.add({
+      ...form,
+      clockId: clockId.value,
+      orderId: orderId.value || undefined,
+      startedAt: Date.now(),
+    });
+    ElMessage.success(`已追加${orderId.value ? '返修' : ''}步骤 #${created.seq} ${created.stepType}`);
+    form.operator = '';
+    form.troubleNote = '';
+    form.partIds = [];
+  } catch (e) {
+    error.value = (e as Error).message;
+  }
 }
 
 async function finish(id: string) {
-  await stepStore.finish(id);
-  ElMessage.success('步骤已完成');
+  try {
+    await stepStore.finish(id);
+    ElMessage.success('步骤已完成');
+  } catch (e) {
+    ElMessage.error((e as Error).message);
+  }
 }
 async function rollback(id: string) {
-  await stepStore.rollback(id);
-  ElMessage.warning('步骤已回退');
+  try {
+    await stepStore.rollback(id);
+    ElMessage.warning('步骤已回退');
+  } catch (e) {
+    ElMessage.error((e as Error).message);
+  }
 }
 
 onMounted(async () => {
   await clockStore.load();
   await partStore.load();
   await stepStore.load();
-  if (!clockId.value && clockStore.items.length > 0) {
+  await orderStore.load();
+  if (order.value) {
+    clockId.value = order.value.clockId;
+    form.clockId = clockId.value;
+  } else if (!clockId.value && clockStore.items.length > 0) {
     clockId.value = clockStore.items[0].id;
   }
 });
@@ -104,13 +133,25 @@ onMounted(async () => {
 <template>
   <div class="page">
     <div class="header">
-      <h2>新建维修工序</h2>
+      <h2>{{ orderId ? '追加返修工序' : '新建维修工序' }}</h2>
+      <el-tag v-if="order" :type="order.type === 'warranty' ? 'warning' : 'info'">
+        {{ order.orderNo }} · {{ ORDER_TYPE_LABEL[order.type] }}
+      </el-tag>
       <el-tag type="info" effect="plain">建议顺序号 {{ nextSeq }}</el-tag>
       <el-tag type="info" effect="plain">现有步骤 {{ total }} 个</el-tag>
       <el-tag v-if="gaps.length" type="danger">跳号 {{ gaps.join('、') }}</el-tag>
       <div class="spacer" />
-      <el-button v-if="clockId" @click="router.push(`/clocks/${clockId}`)">查看钟表详情</el-button>
+      <el-button v-if="orderId" @click="router.push(`/orders/${orderId}`)">返回返修单</el-button>
+      <el-button v-else-if="clockId" @click="router.push(`/clocks/${clockId}`)">查看钟表详情</el-button>
     </div>
+
+    <el-alert
+      v-if="order"
+      title="返修工序单独建在返修单名下；钟表原始工序保持只读，首次完工与师傅记录不会被覆盖"
+      type="info"
+      :closable="false"
+      style="margin-bottom: 12px"
+    />
 
     <div class="grid">
       <el-card shadow="never">
@@ -118,7 +159,7 @@ onMounted(async () => {
         <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-bottom: 12px" />
         <el-form :model="form" label-width="120px">
           <el-form-item label="钟表">
-            <el-select v-model="clockId" style="width: 100%">
+            <el-select v-model="clockId" style="width: 100%" :disabled="!!orderId">
               <el-option
                 v-for="c in clockStore.items"
                 :key="c.id"
@@ -182,13 +223,19 @@ onMounted(async () => {
       <el-card shadow="never">
         <template #header>
           <div class="card-head">
-            <strong>该钟表现有工序</strong>
+            <strong>{{ orderId ? '该返修单现有工序' : '该钟表现有工序' }}</strong>
             <el-tag size="small">{{ percent }}%</el-tag>
             <span v-if="current" class="muted">当前卡点 #{{ current.seq }} {{ current.stepType }}</span>
             <span v-else class="muted">全部完成</span>
           </div>
         </template>
-        <StepSequence :items="steps" @finish="finish" @rollback="rollback" />
+        <StepSequence
+          :items="steps"
+          :sortable="!order?.closedAt"
+          :readonly="!!order?.closedAt"
+          @finish="finish"
+          @rollback="rollback"
+        />
       </el-card>
     </div>
   </div>

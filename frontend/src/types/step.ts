@@ -23,6 +23,8 @@ export const STEP_FIELD_MAP: Record<
 export interface RepairStep {
   id: string;
   clockId: string;
+  /** 所属返修/维修单；空表示该钟表的原始维修档案（交付后只读封存） */
+  orderId?: string;
   stepType: StepType;
   /** 顺序号，不得跳号 */
   seq: number;

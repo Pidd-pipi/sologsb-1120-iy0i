@@ -3,10 +3,12 @@ import type { Clock } from '../types/clock';
 import type { MovementPart } from '../types/part';
 import type { RepairStep } from '../types/step';
 import type { TimekeepingTest } from '../types/test';
+import type { Delivery, RepairOrder } from '../types/order';
 import { newId } from './id';
+import { warrantyEndOf } from './warranty';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -14,6 +16,8 @@ class ClockRepairDB extends Dexie {
   parts!: Table<MovementPart, string>;
   steps!: Table<RepairStep, string>;
   tests!: Table<TimekeepingTest, string>;
+  deliveries!: Table<Delivery, string>;
+  orders!: Table<RepairOrder, string>;
 
   constructor() {
     super(DB_NAME);
@@ -48,6 +52,15 @@ class ClockRepairDB extends Dexie {
             if (row.positions === undefined) row.positions = [];
           });
       });
+    // v3：返修档案 —— 交付记录（领取人、保修截止日）与返修/维修单
+    this.version(3).stores({
+      clocks: 'id, clockNo, kind, caliber, conditionGrade, createdAt',
+      parts: 'id, clockId, name, wearState, decision, sourceLot',
+      steps: 'id, clockId, orderId, seq, stepType, state, startedAt',
+      tests: 'id, clockId, orderId, testedAt, conclusion',
+      deliveries: 'id, clockId, orderId, deliveredAt, warrantyEndAt',
+      orders: 'id, clockId, type, createdAt, closedAt',
+    });
   }
 }
 
@@ -207,8 +220,9 @@ export async function ensureSeedData(): Promise<void> {
       torque: 0,
       troubleNote: '',
       operator: '祁仲言',
-      startedAt: now - 3 * day,
-      state: 'pending',
+      startedAt: now - 5 * day,
+      finishedAt: now - 5 * day + 30 * 60000,
+      state: 'done',
     },
   ];
 
@@ -231,10 +245,72 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
-  await db.transaction('rw', db.clocks, db.parts, db.steps, db.tests, async () => {
-    await db.clocks.bulkPut(clocks);
-    await db.parts.bulkPut(parts);
-    await db.steps.bulkPut(steps);
-    await db.tests.bulkPut(tests);
-  });
+  // 交付后同一故障在保修期内回来：原档案封存只读，另建保修返修单
+  const deliveryA = newId('dlv');
+  const orderA = newId('ord');
+  const deliveredAt = now - 4 * day;
+
+  const deliveries: Delivery[] = [
+    {
+      id: deliveryA,
+      clockId: clockA,
+      kind: '首次交付',
+      deliveredAt,
+      receiverName: '周慕云',
+      receiverPhone: '138****2046',
+      warrantyMonths: 6,
+      warrantyEndAt: warrantyEndOf(deliveredAt, 6),
+      operator: '祁仲言',
+      note: '当面校时 3 分钟，客人确认走时正常后签收',
+    },
+  ];
+
+  const orders: RepairOrder[] = [
+    {
+      id: orderA,
+      orderNo: 'FX-SEED-01',
+      clockId: clockA,
+      type: 'warranty',
+      faultDesc: '客人反映满链后日差由 +6s/d 变为慢约 2 分钟；复现为满链静置 12 小时后摆幅掉到 200° 以下，二轮下轴孔润滑油干涸',
+      liability: '店方责任',
+      liabilityNote: '首次润滑油量偏少，属装配工序问题，保修内免费返修',
+      prevDeliveryId: deliveryA,
+      createdBy: '祁仲言',
+      createdAt: now - 1 * day,
+    },
+  ];
+
+  const orderSteps: RepairStep[] = [
+    {
+      id: newId('stp'),
+      clockId: clockA,
+      orderId: orderA,
+      stepType: '拆解',
+      seq: 1,
+      partIds: [parts[1].id],
+      cleanSolvent: '',
+      cleanMethod: '',
+      oilType: '',
+      oilPoints: '',
+      torque: 0.5,
+      troubleNote: '二轮下宝石轴承上油膜已干结',
+      operator: '祁仲言',
+      startedAt: now - 1 * day,
+      state: 'pending',
+    },
+  ];
+
+  await db.transaction(
+    'rw',
+    [db.clocks, db.parts, db.steps, db.tests, db.deliveries, db.orders],
+    async () => {
+      await db.clocks.bulkPut(clocks);
+      await db.parts.bulkPut(parts);
+      await db.steps.bulkPut(steps);
+      await db.tests.bulkPut(tests);
+      await db.deliveries.bulkPut(deliveries);
+      await db.orders.bulkPut(orders);
+      await db.steps.bulkPut(orderSteps);
+    },
+  );
 }

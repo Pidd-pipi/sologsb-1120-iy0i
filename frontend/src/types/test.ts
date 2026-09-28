@@ -18,6 +18,8 @@ export interface PositionReading {
 export interface TimekeepingTest {
   id: string;
   clockId: string;
+  /** 所属返修/维修单；空表示原始维修档案（交付后只读封存） */
+  orderId?: string;
   testedAt: number;
   /** 摆幅 ° */
   amplitude: number;

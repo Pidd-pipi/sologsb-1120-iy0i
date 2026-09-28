@@ -4,8 +4,10 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { useStepStore } from '../stores/stepStore';
+import { useOrderStore } from '../stores/orderStore';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
+import { ORDER_TYPE_LABEL } from '../types/order';
 import { TEST_POSITIONS, judgeTest, type PositionReading } from '../types/test';
 import { amplitudeLevel, avgAmplitude, avgBeatError, avgRate, beatErrorLevel, rateLabel, ratePerDayToMonth } from '../utils/timeCalc';
 
@@ -13,10 +15,16 @@ const route = useRoute();
 const router = useRouter();
 const clockStore = useClockStore();
 const stepStore = useStepStore();
+const orderStore = useOrderStore();
 
 const clockId = ref(String(route.params.clockId ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
-const tests = computed(() => stepStore.testsByClock(clockId.value));
+/** ?orderId= 返修单模式：测试挂在返修单名下，原档案测试只读 */
+const orderId = ref(String(route.query.orderId ?? ''));
+const order = computed(() => (orderId.value ? orderStore.byId(orderId.value) : undefined));
+const tests = computed(() =>
+  orderId.value ? stepStore.testsByOrder(orderId.value) : stepStore.testsByClock(clockId.value),
+);
 
 const readings = reactive<PositionReading[]>(
   TEST_POSITIONS.map((position) => ({ position, rate: 0, amplitude: 260, beatError: 0.4 })),
@@ -58,17 +66,22 @@ async function save() {
     ElMessage.error('未指定钟表');
     return;
   }
-  await stepStore.addTest({
-    clockId: clockId.value,
-    testedAt: Date.now(),
-    amplitude: avg.value.amplitude,
-    beatError: avg.value.beatError,
-    rate: avg.value.rate,
-    positions: readings.map((r) => ({ ...r })),
-    powerReserve: powerReserve.value,
-    conclusion: conclusion.value,
-  });
-  ElMessage.success('走时测试已记录');
+  try {
+    await stepStore.addTest({
+      clockId: clockId.value,
+      orderId: orderId.value || undefined,
+      testedAt: Date.now(),
+      amplitude: avg.value.amplitude,
+      beatError: avg.value.beatError,
+      rate: avg.value.rate,
+      positions: readings.map((r) => ({ ...r })),
+      powerReserve: powerReserve.value,
+      conclusion: conclusion.value,
+    });
+    ElMessage.success(orderId.value ? '返修走时测试已记录' : '走时测试已记录');
+  } catch (e) {
+    ElMessage.error((e as Error).message);
+  }
 }
 
 async function copySheet() {
@@ -103,6 +116,10 @@ function reset() {
 onMounted(async () => {
   await clockStore.load();
   await stepStore.load();
+  await orderStore.load();
+  if (order.value && order.value.clockId !== clockId.value) {
+    clockId.value = order.value.clockId;
+  }
   if (!clock.value && clockStore.items.length > 0) {
     clockId.value = clockStore.items[0].id;
     await router.replace(`/tests/${clockId.value}`);
@@ -115,9 +132,13 @@ onMounted(async () => {
     <div class="header">
       <h2>走时测试 · {{ clock?.clockNo ?? '未选择' }}</h2>
       <StateBadge :grade="clock?.conditionGrade" />
+      <el-tag v-if="order" :type="order.type === 'warranty' ? 'warning' : 'info'">
+        {{ order.orderNo }} · {{ ORDER_TYPE_LABEL[order.type] }}
+      </el-tag>
       <el-tag type="info" effect="plain">历史测试 {{ tests.length }} 次</el-tag>
       <div class="spacer" />
-      <el-button @click="router.push(`/clocks/${clockId}`)">返回钟表详情</el-button>
+      <el-button v-if="order" @click="router.push(`/orders/${order.id}`)">返回返修单</el-button>
+      <el-button v-else @click="router.push(`/clocks/${clockId}`)">返回钟表详情</el-button>
     </div>
 
     <div class="grid">

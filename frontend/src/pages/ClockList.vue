@@ -4,23 +4,29 @@ import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { useStepStore } from '../stores/stepStore';
+import { useOrderStore } from '../stores/orderStore';
 import { useClockSearch } from '../hooks/useClockSearch';
 import ClockCard from '../components/common/ClockCard.vue';
 import { CLOCK_KINDS, CONDITION_GRADES, type ClockDraft, type ClockKind, type ConditionGrade } from '../types/clock';
+import { ORDER_TYPE_LABEL } from '../types/order';
+import { formatDate, isWithinWarranty, warrantyDaysLeft } from '../utils/warranty';
 
 const router = useRouter();
 const clockStore = useClockStore();
 const stepStore = useStepStore();
+const orderStore = useOrderStore();
 const { filters, result, options, reset } = useClockSearch();
 
-const REPAIR_STATES = ['未开工', '维修中', '待测试', '已完成'] as const;
+const REPAIR_STATES = ['未开工', '维修中', '待测试', '已完成', '返修中'] as const;
 
 type RepairState = (typeof REPAIR_STATES)[number];
 
-/** 由工序与走时测试推导修复状态，用于台账分栏 */
+/** 由单据、工序与走时测试推导修复状态，用于台账分栏 */
 function repairStateOf(clockId: string): RepairState {
-  const steps = stepStore.items.filter((s) => s.clockId === clockId);
-  const tests = stepStore.tests.filter((t) => t.clockId === clockId);
+  const openOrder = orderStore.openOrdersMap.get(clockId);
+  if (openOrder) return '返修中';
+  const steps = stepStore.items.filter((s) => s.clockId === clockId && !s.orderId);
+  const tests = stepStore.tests.filter((t) => t.clockId === clockId && !t.orderId);
   const done = steps.filter((s) => s.state === 'done').length;
   if (steps.length === 0) return '未开工';
   if (done === steps.length && tests.length > 0) return '已完成';
@@ -35,6 +41,33 @@ const columns = computed(() =>
     rows: result.value.filter((it) => repairStateOf(it.id) === state),
   })),
 );
+
+function cardFooter(clockId: string): string {
+  const original = stepStore.items.filter((s) => s.clockId === clockId && !s.orderId);
+  const openOrder = orderStore.openOrdersMap.get(clockId);
+  const orderDone = openOrder
+    ? stepStore.items.filter((s) => s.orderId === openOrder.id && s.state === 'done').length
+    : 0;
+  const orderTotal = openOrder
+    ? stepStore.items.filter((s) => s.orderId === openOrder.id).length
+    : 0;
+  const parts: string[] = [
+    `原工序 ${original.filter((s) => s.state === 'done').length}/${original.length}`,
+  ];
+  if (openOrder) {
+    parts.push(`${ORDER_TYPE_LABEL[openOrder.type]} ${orderDone}/${orderTotal}`);
+  } else {
+    const delivery = orderStore.latestDelivery(clockId);
+    if (delivery) {
+      parts.push(
+        isWithinWarranty(delivery)
+          ? `保修至 ${formatDate(delivery.warrantyEndAt)}（剩 ${warrantyDaysLeft(delivery)} 天）`
+          : `保修至 ${formatDate(delivery.warrantyEndAt)}（已过保）`,
+      );
+    }
+  }
+  return parts.join(' · ');
+}
 
 const dialogVisible = ref(false);
 const form = reactive<ClockDraft>({
@@ -79,6 +112,7 @@ async function submit() {
 onMounted(() => {
   void clockStore.load();
   void stepStore.load();
+  void orderStore.load();
 });
 </script>
 
@@ -134,18 +168,21 @@ onMounted(() => {
     </el-card>
 
     <div class="board">
-      <div v-for="col in columns" :key="col.state" class="column">
+      <div
+        v-for="col in columns"
+        :key="col.state"
+        class="column"
+        :class="{ repairing: col.state === '返修中' }"
+      >
         <div class="column-title">
           <strong>{{ col.state }}</strong>
-          <el-tag size="small" type="info">{{ col.rows.length }}</el-tag>
+          <el-tag size="small" :type="col.state === '返修中' ? 'danger' : 'info'">{{ col.rows.length }}</el-tag>
         </div>
         <ClockCard
           v-for="item in col.rows"
           :key="item.id"
           :item="item"
-          :footer="`工序 ${stepStore.items.filter((s) => s.clockId === item.id && s.state === 'done').length}/${
-            stepStore.items.filter((s) => s.clockId === item.id).length
-          } · 走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id).length} 次`"
+          :footer="cardFooter(item.id)"
           @open="(id) => router.push(`/clocks/${id}`)"
         />
         <el-empty v-if="col.rows.length === 0" description="暂无" :image-size="60" />
@@ -221,7 +258,7 @@ onMounted(() => {
 }
 .board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 .column {
@@ -234,5 +271,8 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 15px;
+}
+.column.repairing .column-title strong {
+  color: #d93025;
 }
 </style>
